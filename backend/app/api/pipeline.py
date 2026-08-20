@@ -1,99 +1,49 @@
-"""ETL pipeline simulation endpoints."""
-from __future__ import annotations
-
-import time
-from datetime import datetime
-
-from fastapi import APIRouter, Depends
-from pydantic import BaseModel
-from sqlalchemy.orm import Session
-
-from ..db import get_db
-from ..models import PipelineRun, MetricDaily
-from .deps import latest_date
-
-router = APIRouter(prefix="/pipeline", tags=["pipeline"])
-
-PIPELINE_JOBS = ["extract_transactions", "transform_metrics", "load_warehouse", "train_models"]
-
-
-class StageOut(BaseModel):
-    name: str
-    status: str
-    duration_ms: int
-    rows: int = 0
-
-
-class PipelineRunOut(BaseModel):
-    id: int
-    job_name: str
-    status: str
-    started_at: datetime
-    finished_at: datetime | None
-    rows_processed: int
-    stages: list[StageOut]
-
-    class Config:
-        from_attributes = True
-
-
-@router.get("/runs", response_model=list[PipelineRunOut])
-def list_runs(limit: int = 25, db: Session = Depends(get_db)):
-    runs = db.query(PipelineRun).order_by(PipelineRun.started_at.desc()).limit(limit).all()
-    return runs
-
-
-@router.post("/run", response_model=PipelineRunOut)
-def run_pipeline(db: Session = Depends(get_db)):
-    """Simulate a full ETL+train cycle synchronously (fast, deterministic-ish)."""
-    import random
-    random.seed()  # per-run variance
-    run = PipelineRun(job_name="full_etl", status="running", started_at=datetime.utcnow(), rows_processed=0, stages=[])
-    db.add(run)
-    db.commit()
-    db.refresh(run)
-
-    total_rows = db.query(MetricDaily).count()
-    stages: list[dict] = []
-    statuses = []
-    for job in PIPELINE_JOBS:
-        t0 = time.perf_counter()
-        duration_ms = int((time.perf_counter() - t0 + random.uniform(0.02, 0.09)) * 1000)
-        status = "success"
-        if job == "train_models" and random.random() < 0.08:
-            status = "failed"
-        statuses.append(status)
-        rows = random.randint(40000, 52000) if job != "train_models" else 0
-        stages.append({"name": job, "status": status, "duration_ms": duration_ms, "rows": rows})
-        if status == "failed":
-            break
-
-    final = "failed" if "failed" in statuses else "success"
-    run.status = final
-    run.finished_at = datetime.utcnow()
-    run.rows_processed = total_rows if final == "success" else 0
-    run.stages = stages
-    db.commit()
-    db.refresh(run)
-    return run
-
-
-@router.get("/freshness")
-def freshness(db: Session = Depends(get_db)):
-    latest = latest_date(db)
-    metrics = db.query(MetricDaily.metric).distinct().all()
-    now = datetime.utcnow()
-    age_hours = None
-    fresh = False
-    if latest:
-        age_hours = round((now - datetime.combine(latest, datetime.min.time())).total_seconds() / 3600, 1)
-        fresh = age_hours <= 48
-    last_run = db.query(PipelineRun.started_at).order_by(PipelineRun.started_at.desc()).first()
-    return {
-        "latest_data_date": latest.isoformat() if latest else None,
-        "age_hours": age_hours,
-        "is_fresh": fresh,
-        "metrics_tracked": [m[0] for m in metrics],
-        "rows_total": db.query(MetricDaily).count(),
-        "last_pipeline_at": last_run[0].isoformat() if last_run else None,
-    }
+         (SELECT thread_id, event_id, event_name, timer_wait, timer_start, nesting_event_id,
+                  CONCAT(sql_text, '\\n',
+                         'errors: ', errors, '\\n',
+                         'warnings: ', warnings, '\\n',
+                         'lock time: ', ROUND(lock_time/1000000, 2),'us\\n',
+                         'rows affected: ', rows_affected, '\\n',
+                         'rows sent: ', rows_sent, '\\n',
+                         'rows examined: ', rows_examined, '\\n',
+                         'tmp tables: ', created_tmp_tables, '\\n',
+                         'tmp disk tables: ', created_tmp_disk_tables, '\\n',
+                         'select scan: ', select_scan, '\\n',
+                         'select full join: ', select_full_join, '\\n',
+                         'select full range join: ', select_full_range_join, '\\n',
+                         'select range: ', select_range, '\\n',
+                         'select range check: ', select_range_check, '\\n',
+                         'sort merge passes: ', sort_merge_passes, '\\n',
+                         'sort rows: ', sort_rows, '\\n',
+                         'sort range: ', sort_range, '\\n',
+                         'sort scan: ', sort_scan, '\\n',
+                         'no index used: ', IF(no_index_used, 'TRUE', 'FALSE'), '\\n',
+                         'no good index used: ', IF(no_good_index_used, 'TRUE', 'FALSE'), '\\n'
+                         ) AS wait_info
+             FROM performance_schema.events_statements_history_long WHERE thread_id = thd_id)
+          UNION
+          (SELECT thread_id, event_id, event_name, timer_wait, timer_start, nesting_event_id, null AS wait_info
+             FROM performance_schema.events_stages_history_long WHERE thread_id = thd_id)
+          UNION 
+          (SELECT thread_id, event_id,
+                  CONCAT(event_name ,
+                         IF(event_name NOT LIKE 'wait/synch/mutex%', IFNULL(CONCAT(' - ', operation), ''), ''),
+                         IF(number_of_bytes IS NOT NULL, CONCAT(' ', number_of_bytes, ' bytes'), ''),
+                         IF(event_name LIKE 'wait/io/file%', '\\n', ''),
+                         IF(object_schema IS NOT NULL, CONCAT('\\nObject: ', object_schema, '.'), ''),
+                         IF(object_name IS NOT NULL,
+                            IF (event_name LIKE 'wait/io/socket%',
+                                CONCAT(IF (object_name LIKE ':0%', @@socket, object_name)),
+                                object_name),
+                            ''),
+                          IF(index_name IS NOT NULL, CONCAT(' Index: ', index_name), ''),'\\n'
+                         ) AS event_name,
+                  timer_wait, timer_start, nesting_event_id, source AS wait_info
+             FROM performance_schema.events_waits_history_long WHERE thread_id = thd_id)) events
+    ORDER BY event_id;
+    RETURN CONCAT('{',
+                  CONCAT_WS(',',
+                            '"rankdir": "LR"',
+                            '"nodesep": "0.10"',
+                            CONCAT('"stack_created": "', NOW(), '"'),
+                    
