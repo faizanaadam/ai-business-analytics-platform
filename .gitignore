@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# Env — never commit
+.env
+.env.*
+!.env.example
+
+# Node
+node_modules/
+dist/
+
+# Build / misc
+*.log
+.DS_Store
+tmp/
+
+# Dev tool session artifacts
+.playwright-mcp/
