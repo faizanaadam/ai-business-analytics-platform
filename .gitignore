@@ -22,3 +22,4 @@ tmp/
 # Dev tool session artifacts
 .playwright-mcp/
 backups/
+app/notes/
